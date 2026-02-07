@@ -44,14 +44,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
   bool _isLoadingUser = true;
   String _userRole = '';
   String _userBranchId = '';
-  String _selectedBranchId = 'pusat'; // Default cabang (dipakai untuk filter utang)
+  String _selectedBranchId = 'pusat';
 
   // --- DATA TAB & CABANG (Untuk Owner) ---
   int _selectedTabIndex = 0;
 
   final List<String> _allTabs = ["Box Factory", "Maint. Alfa", "Saufa Olshop"];
   final List<String> _allBranchIds = ["bst_box", "m_alfa", "saufa"];
-  final List<String> _allWalletIds = ["petty_bst", "petty_alfa", "petty_saufa"];
+  // [UPDATE] ID Wallet sesuai Seeder Baru
+  final List<String> _allWalletIds = ["petty_box", "petty_alfa", "petty_saufa"];
 
   List<String> _visibleTabs = [];
   List<String> _visibleBranchIds = [];
@@ -61,15 +62,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
   @override
   void initState() {
     super.initState();
-    // 1. Inisialisasi Service Notifikasi
     NotificationService().init();
     FCMService().init();
-
-    // 2. Cek User & Mulai Monitoring Data
     _checkUserAccess();
     _initData();
-
-    // 3. Panggil Cubit untuk stream data
     context.read<DashboardCubit>().startMonitoring();
   }
 
@@ -81,20 +77,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   void _initData() async {
     final user = FirebaseAuth.instance.currentUser;
-
     if (user != null) {
       final doc = await FirebaseFirestore.instance.collection('users').doc(user.uid).get();
-
       if (doc.exists && mounted) {
         setState(() {
           _userRole = doc['role'] ?? 'admin_branch';
           _userBranchId = doc['branch_id'] ?? 'bst_box';
         });
-
-        // Setup Listener Notifikasi (Badge Merah)
         _setupNotificationListener();
-
-        // Jalankan pengecekan harian (Reminder Gaji/Utang)
         _runDailyChecks(user.uid);
       }
     }
@@ -120,13 +110,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
           _userRole = data['role'] ?? 'admin_branch';
           _userBranchId = data['branch_id'] ?? 'bst_box';
 
-          // Konfigurasi Tab berdasarkan Role
           if (_userRole == 'owner') {
             _visibleTabs = List.from(_allTabs);
             _visibleBranchIds = List.from(_allBranchIds);
             _visibleWalletIds = List.from(_allWalletIds);
           } else {
-            // Jika admin cabang, hanya lihat cabangnya sendiri
             int index = _allBranchIds.indexOf(_userBranchId);
             if (index != -1) {
               _visibleTabs = [_allTabs[index]];
@@ -156,7 +144,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
     await _checkUserAccess();
   }
 
-  // --- LOGIKA CEK HARIAN & NOTIFIKASI ---
   Future<void> _runDailyChecks(String userId) async {
     final now = DateTime.now();
     final today = DateTime(now.year, now.month, now.day);
@@ -166,10 +153,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final userDoc = await userRef.get();
     String lastCheck = userDoc.data()?['last_daily_check'] ?? '';
 
-    if (lastCheck == todayStr) return; // Sudah dicek hari ini
+    if (lastCheck == todayStr) return;
 
-    // 1. Cek Jadwal Gaji (Setiap Tanggal 1)
-    int paydayDay = 1;
+    int paydayDay = 25; // Default tanggal gajian
     DateTime targetPayday = DateTime(today.year, today.month, paydayDay);
     if (targetPayday.isBefore(today)) {
       targetPayday = DateTime(today.year, today.month + 1, paydayDay);
@@ -179,9 +165,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
       String msg = diffGaji == 0 ? "Hari ini waktunya gajian!" : "Gajian tinggal $diffGaji hari lagi.";
       await _sendSystemNotification(title: "Reminder Penggajian 📅", message: msg, type: 'reminder_payroll');
     }
-
-    // 2. Cek Jatuh Tempo Utang
-    // Query debts... (Kode disederhanakan agar fokus ke Dashboard UI)
 
     await userRef.update({'last_daily_check': todayStr});
   }
@@ -208,7 +191,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
 
     _notifSubscription = query.snapshots().listen((snapshot) {
-      // Logic update badge notifikasi
       if (mounted) setState(() {});
     });
   }
@@ -226,7 +208,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
         elevation: 0,
         iconTheme: const IconThemeData(color: Colors.black),
         actions: [
-          // TOMBOL NOTIFIKASI
           StreamBuilder<QuerySnapshot>(
             stream: FirebaseFirestore.instance
                 .collection('notifications')
@@ -278,76 +259,47 @@ class _DashboardScreenState extends State<DashboardScreen> {
         onRefresh: _onRefresh,
         child: BlocBuilder<DashboardCubit, DashboardState>(
           builder: (context, state) {
-            // 1. STATE LOADING
             if (state is DashboardLoading) {
               return const Center(child: CircularProgressIndicator());
-            }
-
-            // 2. STATE ERROR (TAMPILAN BARU UNTUK FIX LOADING TERUS MENERUS)
-            else if (state is DashboardError) {
+            } else if (state is DashboardError) {
               return Center(
-                child: Padding(
-                  padding: const EdgeInsets.all(24.0),
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      const Icon(Icons.error_outline, size: 60, color: Colors.red),
-                      const SizedBox(height: 16),
-                      Text("Terjadi Kesalahan", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.grey[800])),
-                      const SizedBox(height: 8),
-                      Text(state.message, textAlign: TextAlign.center, style: const TextStyle(color: Colors.grey)),
-                      const SizedBox(height: 24),
-                      ElevatedButton.icon(
-                        onPressed: () => context.read<DashboardCubit>().startMonitoring(),
-                        icon: const Icon(Icons.refresh),
-                        label: const Text("Coba Lagi"),
-                        style: ElevatedButton.styleFrom(backgroundColor: AppColors.primary),
-                      )
-                    ],
-                  ),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    const Icon(Icons.error_outline, size: 60, color: Colors.red),
+                    Text("Error: ${state.message}"),
+                    ElevatedButton(onPressed: () => context.read<DashboardCubit>().startMonitoring(), child: const Text("Coba Lagi"))
+                  ],
                 ),
               );
-            }
-
-            // 3. STATE SUKSES (LOADED)
-            else if (state is DashboardLoaded) {
-              // Jika dompet kosong sama sekali (Kasus reset database)
+            } else if (state is DashboardLoaded) {
               if (state.wallets.isEmpty) {
                 return Center(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      const Icon(Icons.warning_amber_rounded, size: 60, color: Colors.orange),
-                      const SizedBox(height: 16),
-                      const Text("Data Dompet Hilang / Kosong!", style: TextStyle(fontWeight: FontWeight.bold)),
-                      const SizedBox(height: 24),
-                      ElevatedButton.icon(
-                        icon: const Icon(Icons.cloud_upload),
-                        label: const Text("Generate Dompet Default"),
-                        style: ElevatedButton.styleFrom(backgroundColor: Colors.blue),
-                        onPressed: () => _regenerateWallets(context),
-                      )
-                    ],
+                  child: ElevatedButton(
+                    child: const Text("Generate 5 Wallet System"),
+                    onPressed: () => _regenerateWallets(context),
                   ),
                 );
               }
 
-              // Persiapan Data Tampilan
-              final mainWallet = state.wallets.firstWhere((w) => w.id == 'main_cash', orElse: () => state.wallets.first);
-              final double totalSmallCash = state.wallets.where((w) => w.id != 'main_cash').fold(0.0, (sum, w) => sum + w.balance);
+              // [LOGIC BARU] AMBIL DOMPET SPESIFIK 5 WALLET SYSTEM
+              final companyWallet = state.wallets.firstWhere((w) => w.id == 'company_wallet', orElse: () => state.wallets.first);
+              final treasurerWallet = state.wallets.firstWhere((w) => w.id == 'treasurer_wallet', orElse: () => WalletModel(id: 'null', name: 'N/A', balance: 0, branchId: '', isMain: false));
 
-              // Tentukan Tab yang Aktif
+              // Hitung Total Kas Kecil Cabang (Level 3)
+              final double totalBranchesCash = state.wallets
+                  .where((w) => w.id != 'company_wallet' && w.id != 'treasurer_wallet')
+                  .fold(0.0, (sum, w) => sum + w.balance);
+
               if (_selectedTabIndex >= _visibleBranchIds.length) _selectedTabIndex = 0;
               String currentBranch = _visibleBranchIds[_selectedTabIndex];
               String currentWalletId = _visibleWalletIds[_selectedTabIndex];
-
-              // Update Global Selection untuk Debt Screen
               _selectedBranchId = currentBranch;
 
-              // Filter Transaksi (Berdasarkan Tab/Cabang yang dipilih)
+              // Filter Transaksi untuk Grafik & List
               List<TransactionModel> filteredTransactions = state.recentTransactions.where((tx) {
                 if (currentBranch == 'unknown') return false;
-                // Tampilkan jika wallet ID cocok ATAU branch ID cocok
+                // Tampilkan transaksi yg walletnya sesuai ATAU branch-nya sesuai
                 bool isWalletMatch = tx.walletId == currentWalletId;
                 bool isBranchMatch = (tx.relatedBranchId == currentBranch);
                 return isWalletMatch || isBranchMatch;
@@ -355,30 +307,28 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
               List<DailySummary> filteredChartData = _recalculateChart(filteredTransactions);
 
-              // Filter Utang (Hanya tampilkan utang cabang tsb)
+              // Filter Utang
               List<Map<String, dynamic>> filteredDebts = state.allDebts.where((d) {
                 return d['branch_id'] == currentBranch;
               }).toList();
               double currentTabDebt = filteredDebts.fold(0, (sum, d) => sum + (d['amount'] ?? 0));
 
-              // Ambil Wallet Cabang tsb
               WalletModel? currentBranchWallet;
               try {
-                currentBranchWallet = state.wallets.firstWhere((w) => w.branchId == currentBranch);
-              } catch (_) {} // Bisa null jika belum diaktifkan
+                currentBranchWallet = state.wallets.firstWhere((w) => w.branchId == currentBranch && w.id.startsWith('petty_'));
+              } catch (_) {}
 
               double currentTabBalance = currentBranchWallet?.balance ?? 0;
 
-              // --- UI UTAMA DASHBOARD ---
               return SingleChildScrollView(
                 physics: const AlwaysScrollableScrollPhysics(),
                 padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    // Header (Beda antara Owner dan Admin)
+                    // --- HEADER 3 LEVEL (KHUSUS OWNER) ---
                     if (_userRole == 'owner')
-                      _buildOwnerHeader(state.totalAssets, mainWallet, totalSmallCash)
+                      _buildOwnerHeader(companyWallet, treasurerWallet, totalBranchesCash)
                     else if (_userRole == 'admin_branch')
                       _buildBranchAdminHeader(currentBranchWallet, currentBranch)
                     else
@@ -386,36 +336,32 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
                     const SizedBox(height: 20),
 
-                    // Tab Bar Custom (Hanya Owner)
                     if (_userRole == 'owner') ...[
                       _buildCustomTabBar(),
                       const SizedBox(height: 20),
                     ],
 
-                    // Kartu Status: Sisa Kas Kecil & Total Utang
                     IntrinsicHeight(
                       child: Row(
                         crossAxisAlignment: CrossAxisAlignment.stretch,
                         children: [
+                          // Kartu Hijau (Saldo Kas Kecil Cabang)
                           if (_userRole == 'owner') ...[
                             Expanded(child: _buildGreenStatusCard(currentTabBalance, currentBranchWallet)),
                             const SizedBox(width: 12),
                           ],
+                          // Kartu Merah (Utang Cabang)
                           Expanded(child: _buildDebtCard(currentTabDebt)),
                         ],
                       ),
                     ),
 
                     const SizedBox(height: 25),
-
-                    // Grafik Batang
                     Text("Ringkasan ${_visibleTabs.isNotEmpty ? _visibleTabs[_selectedTabIndex] : '-'}", style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
                     const SizedBox(height: 15),
                     _buildChartContainer(filteredChartData),
 
                     const SizedBox(height: 25),
-
-                    // List Transaksi Terkini
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
@@ -437,7 +383,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     else
                       ...filteredTransactions.take(5).map((tx) => _buildTransactionItem(tx)),
 
-                    const SizedBox(height: 80), // Spasi bawah agar tidak ketutup FAB
+                    const SizedBox(height: 80),
                   ],
                 ),
               );
@@ -455,22 +401,205 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
-  // --- WIDGET HELPERS ---
-
-  Widget _buildOwnerHeader(double totalAset, WalletModel mainWallet, double totalKasKecil) {
+  // --- [HEADER BARU] 3 LEVEL HIERARKI KEUANGAN ---
+  Widget _buildOwnerHeader(WalletModel companyWallet, WalletModel treasurerWallet, double totalBranches) {
     return Container(
-      width: double.infinity, padding: const EdgeInsets.all(24),
-      decoration: BoxDecoration(gradient: const LinearGradient(colors: [Color(0xFF2962FF), Color(0xFF448AFF)]), borderRadius: BorderRadius.circular(24), boxShadow: [BoxShadow(color: Colors.blue.withOpacity(0.3), blurRadius: 10, offset: const Offset(0, 5))]),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Row(children: [const Icon(Icons.account_balance_wallet_outlined, color: Colors.white70, size: 18), const SizedBox(width: 8), Text("Total Aset Bersih (Global)", style: TextStyle(color: Colors.white.withOpacity(0.9), fontSize: 14))]),
-        const SizedBox(height: 8), Text(_formatRupiah(totalAset), style: const TextStyle(color: Colors.white, fontSize: 32, fontWeight: FontWeight.bold)),
-        const SizedBox(height: 24), Container(height: 1, color: Colors.white24), const SizedBox(height: 16),
-        IntrinsicHeight(child: Row(children: [
-          Expanded(child: InkWell(onTap: () => Navigator.push(context, MaterialPageRoute(builder: (c) => WalletDetailScreen(wallet: mainWallet))), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text("Kas Pusat", style: TextStyle(color: Colors.white.withOpacity(0.7), fontSize: 12)), Text(_formatRupiah(mainWallet.balance), style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16))]))),
-          VerticalDivider(color: Colors.white.withOpacity(0.3), thickness: 1),
-          Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.end, children: [Text("Total Kas Kecil", style: TextStyle(color: Colors.white.withOpacity(0.7), fontSize: 12)), Text(_formatRupiah(totalKasKecil), style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16))])),
-        ]))
-      ]),
+      width: double.infinity,
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+          gradient: const LinearGradient(
+            colors: [Color(0xFF1565C0), Color(0xFF1E88E5)], // Biru Profesional
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+          ),
+          borderRadius: BorderRadius.circular(20),
+          boxShadow: [
+            BoxShadow(color: Colors.blue.withOpacity(0.3), blurRadius: 10, offset: const Offset(0, 5))
+          ]
+      ),
+      child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // LEVEL 1: UANG PERUSAHAAN
+            InkWell(
+              onTap: () => Navigator.push(context, MaterialPageRoute(builder: (c) => WalletDetailScreen(wallet: companyWallet))),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(color: Colors.white.withOpacity(0.2), shape: BoxShape.circle),
+                    child: const Icon(Icons.business, color: Colors.white, size: 24),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text("UANG PERUSAHAAN (Level 1)", style: TextStyle(color: Colors.white.withOpacity(0.8), fontSize: 10, letterSpacing: 1)),
+                        FittedBox(
+                          fit: BoxFit.scaleDown,
+                          child: Text(_formatRupiah(companyWallet.balance), style: const TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.bold)),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 16),
+              child: Divider(color: Colors.white24, height: 1),
+            ),
+
+            // LEVEL 2 & 3: BENDAHARA & CABANG
+            IntrinsicHeight(
+              child: Row(
+                children: [
+                  // LEVEL 2: KAS BENDAHARA
+                  Expanded(
+                    child: InkWell(
+                      onTap: () => Navigator.push(context, MaterialPageRoute(builder: (c) => WalletDetailScreen(wallet: treasurerWallet))),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              const Icon(Icons.account_balance, color: Colors.white70, size: 14),
+                              const SizedBox(width: 4),
+                              Expanded(child: Text("Bendahara Pusat", style: TextStyle(color: Colors.white.withOpacity(0.9), fontSize: 11, fontWeight: FontWeight.bold), overflow: TextOverflow.ellipsis)),
+                            ],
+                          ),
+                          const SizedBox(height: 4),
+                          FittedBox(
+                              fit: BoxFit.scaleDown,
+                              child: Text(_formatRupiah(treasurerWallet.balance), style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16))
+                          ),
+                          // [BARU] TOMBOL ISI MODAL BENDAHARA
+                          const SizedBox(height: 6),
+                          GestureDetector(
+                            onTap: () => _showTopUpTreasurerDialog(companyWallet, treasurerWallet),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                              decoration: BoxDecoration(
+                                color: Colors.white,
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              child: const Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(Icons.add_circle, color: Color(0xFF1565C0), size: 12),
+                                  SizedBox(width: 4),
+                                  Text("Isi Modal", style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Color(0xFF1565C0))),
+                                ],
+                              ),
+                            ),
+                          )
+                        ],
+                      ),
+                    ),
+                  ),
+
+                  VerticalDivider(color: Colors.white.withOpacity(0.3), width: 20),
+
+                  // LEVEL 3: TOTAL CABANG
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            const Icon(Icons.store, color: Colors.white70, size: 14),
+                            const SizedBox(width: 4),
+                            Expanded(child: Text("Total Kas Cabang", style: TextStyle(color: Colors.white.withOpacity(0.9), fontSize: 11, fontWeight: FontWeight.bold), overflow: TextOverflow.ellipsis)),
+                          ],
+                        ),
+                        const SizedBox(height: 4),
+                        FittedBox(
+                            fit: BoxFit.scaleDown,
+                            child: Text(_formatRupiah(totalBranches), style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16))
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            )
+          ]
+      ),
+    );
+  }
+
+  // LOGIC: ISI MODAL BENDAHARA (Level 1 -> Level 2)
+  void _showTopUpTreasurerDialog(WalletModel companyWallet, WalletModel treasurerWallet) {
+    final nominalCtrl = TextEditingController();
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text("Isi Modal Bendahara"),
+        content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(color: Colors.blue[50], borderRadius: BorderRadius.circular(8)),
+                child: const Text(
+                  "Ambil dana dari UANG PERUSAHAAN (Level 1) ke KAS BENDAHARA (Level 2).",
+                  style: TextStyle(fontSize: 12, color: Colors.blue),
+                ),
+              ),
+              const SizedBox(height: 16),
+              TextField(
+                  controller: nominalCtrl,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(labelText: "Nominal (Rp)", border: OutlineInputBorder(), prefixText: "Rp ")
+              )
+            ]
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("Batal")),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.blue[800]),
+            onPressed: () async {
+              if (nominalCtrl.text.isEmpty) return;
+              Navigator.pop(ctx);
+              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Memproses...")));
+
+              try {
+                double amount = double.parse(nominalCtrl.text.replaceAll('.', ''));
+                if (companyWallet.balance < amount) throw Exception("Saldo Uang Perusahaan tidak cukup!");
+
+                await FirebaseFirestore.instance.runTransaction((tx) async {
+                  final compRef = FirebaseFirestore.instance.collection('wallets').doc(companyWallet.id);
+                  final treasRef = FirebaseFirestore.instance.collection('wallets').doc(treasurerWallet.id);
+
+                  final compSnap = await tx.get(compRef);
+                  final treasSnap = await tx.get(treasRef);
+
+                  double bal1 = (compSnap.get('balance') ?? 0).toDouble();
+                  double bal2 = (treasSnap.get('balance') ?? 0).toDouble();
+
+                  tx.update(compRef, {'balance': bal1 - amount});
+                  tx.update(treasRef, {'balance': bal2 + amount});
+
+                  // Catat Mutasi
+                  tx.set(FirebaseFirestore.instance.collection('transactions').doc(), {
+                    'amount': amount, 'type': 'expense', 'category': 'Mutasi Internal', 'description': 'Mutasi ke Kas Bendahara', 'wallet_id': companyWallet.id, 'date': FieldValue.serverTimestamp(), 'user_id': FirebaseAuth.instance.currentUser?.uid, 'deleted_at': null
+                  });
+                  tx.set(FirebaseFirestore.instance.collection('transactions').doc(), {
+                    'amount': amount, 'type': 'income', 'category': 'Suntikan Modal Internal', 'description': 'Terima Modal dari Perusahaan', 'wallet_id': treasurerWallet.id, 'date': FieldValue.serverTimestamp(), 'user_id': FirebaseAuth.instance.currentUser?.uid, 'deleted_at': null
+                  });
+                });
+                if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Modal Bendahara Terisi!"), backgroundColor: Colors.green));
+              } catch (e) {
+                if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Gagal: ${e.toString()}"), backgroundColor: Colors.red));
+              }
+            },
+            child: const Text("Isi Modal"),
+          )
+        ],
+      ),
     );
   }
 
@@ -478,7 +607,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     double balance = wallet?.balance ?? 0;
     return GestureDetector(
       onTap: () { if (wallet != null) Navigator.push(context, MaterialPageRoute(builder: (c) => WalletDetailScreen(wallet: wallet))); },
-      child: Container(width: double.infinity, padding: const EdgeInsets.all(24), decoration: BoxDecoration(color: AppColors.branchBst, gradient: LinearGradient(colors: branchId == 'bst_box' ? [const Color(0xFFD97706), const Color(0xFFF59E0B)] : branchId == 'm_alfa' ? [const Color(0xFFDC2626), const Color(0xFFEF4444)] : [const Color(0xFF7C3AED), const Color(0xFF8B5CF6)]), borderRadius: BorderRadius.circular(24), boxShadow: [BoxShadow(color: Colors.orange.withOpacity(0.3), blurRadius: 10, offset: const Offset(0, 5))]), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Row(children: [const Icon(Icons.store, color: Colors.white70, size: 18), const SizedBox(width: 8), Text("Kas Operasional: ${branchId.toUpperCase().replaceAll('_', ' ')}", style: TextStyle(color: Colors.white.withOpacity(0.9), fontSize: 14))]), const SizedBox(height: 12), Text(_formatRupiah(balance), style: const TextStyle(color: Colors.white, fontSize: 36, fontWeight: FontWeight.bold)), const SizedBox(height: 8), Container(padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4), decoration: BoxDecoration(color: Colors.white24, borderRadius: BorderRadius.circular(20)), child: const Text("Admin Access", style: TextStyle(color: Colors.white, fontSize: 10)))])),
+      child: Container(width: double.infinity, padding: const EdgeInsets.all(24), decoration: BoxDecoration(color: AppColors.branchBst, gradient: LinearGradient(colors: branchId == 'bst_box' ? [const Color(0xFFD97706), const Color(0xFFF59E0B)] : branchId == 'm_alfa' ? [const Color(0xFFDC2626), const Color(0xFFEF4444)] : [const Color(0xFF7C3AED), const Color(0xFF8B5CF6)]), borderRadius: BorderRadius.circular(24), boxShadow: [BoxShadow(color: Colors.orange.withOpacity(0.3), blurRadius: 10, offset: const Offset(0, 5))]), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Row(children: [const Icon(Icons.store, color: Colors.white70, size: 18), const SizedBox(width: 8), Text("Kas Harian: ${branchId.toUpperCase().replaceAll('_', ' ')}", style: TextStyle(color: Colors.white.withOpacity(0.9), fontSize: 14))]), const SizedBox(height: 12), Text(_formatRupiah(balance), style: const TextStyle(color: Colors.white, fontSize: 36, fontWeight: FontWeight.bold)), const SizedBox(height: 8), Container(padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4), decoration: BoxDecoration(color: Colors.white24, borderRadius: BorderRadius.circular(20)), child: const Text("Level 3 Access", style: TextStyle(color: Colors.white, fontSize: 10)))])),
     );
   }
 
@@ -552,10 +681,31 @@ class _DashboardScreenState extends State<DashboardScreen> {
     for (int i = 6; i >= 0; i--) {
       DateTime targetDate = now.subtract(Duration(days: i));
       String dayLabel = DateFormat('E', 'id_ID').format(targetDate);
-      var dailyTx = txs.where((tx) => tx.date.day == targetDate.day && tx.date.month == targetDate.month && tx.date.year == targetDate.year);
 
-      double income = dailyTx.where((t) => t.type == 'income' && !t.category.toLowerCase().contains('top up') && !t.category.toLowerCase().contains('transfer') && !t.category.toLowerCase().contains('suntikan')).fold(0, (sum, t) => sum + t.amount);
-      double expense = dailyTx.where((t) => t.type == 'expense' && !t.category.toLowerCase().contains('top up') && !t.category.toLowerCase().contains('transfer') && !t.category.toLowerCase().contains('suntikan')).fold(0, (sum, t) => sum + t.amount);
+      // Ambil transaksi hari tersebut
+      var dailyTx = txs.where((tx) =>
+      tx.date.day == targetDate.day &&
+          tx.date.month == targetDate.month &&
+          tx.date.year == targetDate.year
+      );
+
+      // --- LOGIC FILTER BARU ---
+      // Kita abaikan kategori yang mengandung kata "Top Up", "Mutasi", atau "Internal"
+      // agar tidak dianggap sebagai Pemasukan/Pengeluaran Real.
+
+      double income = dailyTx.where((t) {
+        bool isTransfer = t.category.contains('Top Up') ||
+            t.category.contains('Mutasi') ||
+            t.category.contains('Internal');
+        return t.type == 'income' && !isTransfer;
+      }).fold(0, (sum, t) => sum + t.amount);
+
+      double expense = dailyTx.where((t) {
+        bool isTransfer = t.category.contains('Top Up') ||
+            t.category.contains('Mutasi') ||
+            t.category.contains('Internal');
+        return t.type == 'expense' && !isTransfer;
+      }).fold(0, (sum, t) => sum + t.amount);
 
       summary.add(DailySummary(dayLabel, income, expense));
     }
@@ -585,7 +735,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   const SizedBox(height: 12),
                   FittedBox(fit: BoxFit.scaleDown, alignment: Alignment.centerLeft, child: Text(wallet == null ? "Belum Aktif" : _formatRupiah(amount), style: const TextStyle(color: AppColors.greenText, fontWeight: FontWeight.bold, fontSize: 22))),
                   const SizedBox(height: 4),
-                  Text(wallet == null ? "Tap tombol di kanan ->" : "Tap untuk mutasi >", style: const TextStyle(color: Colors.grey, fontSize: 10)),
+                  Text(wallet == null ? "Tap tombol di kanan ->" : "Level 3", style: const TextStyle(color: Colors.grey, fontSize: 10)),
                 ],
               ),
             ),
@@ -595,7 +745,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 color: Colors.white, borderRadius: BorderRadius.circular(12),
                 child: InkWell(
                   onTap: () => wallet != null
-                      ? _showTopUpDialog(wallet)
+                      ? _showTopUpDialog(wallet) // Top Up dari Bendahara
                       : _createMissingWallet(_visibleBranchIds[_selectedTabIndex]),
                   borderRadius: BorderRadius.circular(12),
                   child: Container(
@@ -636,13 +786,29 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
+  // --- LOGIC TOP UP: DARI KAS BENDAHARA KE CABANG ---
   void _showTopUpDialog(WalletModel targetWallet) {
     final nominalCtrl = TextEditingController();
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
         title: Text("Top Up: ${targetWallet.name}"),
-        content: Column(mainAxisSize: MainAxisSize.min, children: [const Text("Dana diambil dari KAS PUSAT."), const SizedBox(height: 16), TextField(controller: nominalCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: "Nominal (Rp)", border: OutlineInputBorder(), prefixText: "Rp "))]),
+        content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                padding: const EdgeInsets.all(8),
+                color: Colors.orange[50],
+                child: const Text("⚠️ Dana akan diambil dari KAS BENDAHARA PUSAT (Level 2).", style: TextStyle(fontSize: 12, color: Colors.deepOrange)),
+              ),
+              const SizedBox(height: 16),
+              TextField(
+                  controller: nominalCtrl,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(labelText: "Nominal (Rp)", border: OutlineInputBorder(), prefixText: "Rp ")
+              )
+            ]
+        ),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("Batal")),
           ElevatedButton(
@@ -651,30 +817,63 @@ class _DashboardScreenState extends State<DashboardScreen> {
               if (nominalCtrl.text.isEmpty) return;
               Navigator.pop(ctx);
               ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Memproses Top Up...")));
+
               try {
                 double amount = double.parse(nominalCtrl.text.replaceAll('.', ''));
-                String walletPusat = 'main_cash';
+                String walletSumber = 'treasurer_wallet'; // [FIX] Sumber dari Bendahara
                 String walletCabang = targetWallet.id;
 
                 await FirebaseFirestore.instance.runTransaction((tx) async {
-                  final txPusatRef = FirebaseFirestore.instance.collection('transactions').doc();
-                  tx.set(txPusatRef, { 'amount': amount, 'type': 'expense', 'category': 'Top Up Cabang', 'description': 'Top Up ke ${targetWallet.name}', 'wallet_id': walletPusat, 'related_branch_id': targetWallet.branchId, 'date': FieldValue.serverTimestamp(), 'user_id': _userRole == 'owner' ? 'owner' : _userBranchId, 'deleted_at': null });
+                  // A. Cek Saldo Bendahara
+                  final sumberSnap = await tx.get(FirebaseFirestore.instance.collection('wallets').doc(walletSumber));
+                  if (!sumberSnap.exists) throw Exception("Dompet Bendahara Pusat belum aktif!");
 
-                  final txCabangRef = FirebaseFirestore.instance.collection('transactions').doc();
-                  tx.set(txCabangRef, { 'amount': amount, 'type': 'income', 'category': 'Top Up Masuk', 'description': 'Terima dari Pusat', 'wallet_id': walletCabang, 'related_branch_id': targetWallet.branchId, 'date': FieldValue.serverTimestamp(), 'user_id': _userRole == 'owner' ? 'owner' : _userBranchId, 'deleted_at': null });
-
-                  final pusatSnap = await tx.get(FirebaseFirestore.instance.collection('wallets').doc(walletPusat));
-                  final cabangSnap = await tx.get(FirebaseFirestore.instance.collection('wallets').doc(walletCabang));
-                  if(pusatSnap.exists && cabangSnap.exists) {
-                    double saldoPusat = (pusatSnap.get('balance') ?? 0).toDouble();
-                    double saldoCabang = (cabangSnap.get('balance') ?? 0).toDouble();
-                    tx.update(pusatSnap.reference, {'balance': saldoPusat - amount});
-                    tx.update(cabangSnap.reference, {'balance': saldoCabang + amount});
+                  double saldoSumber = (sumberSnap.get('balance') ?? 0).toDouble();
+                  if (saldoSumber < amount) {
+                    throw Exception("Saldo Bendahara Pusat tidak cukup! (Sisa: ${_formatRupiah(saldoSumber)})");
                   }
+
+                  final cabangSnap = await tx.get(FirebaseFirestore.instance.collection('wallets').doc(walletCabang));
+                  if (!cabangSnap.exists) throw Exception("Dompet cabang tidak ditemukan!");
+
+                  // B. Buat Transaksi
+                  // 1. Pengeluaran Bendahara
+                  final txSumberRef = FirebaseFirestore.instance.collection('transactions').doc();
+                  tx.set(txSumberRef, {
+                    'amount': amount,
+                    'type': 'expense',
+                    'category': 'Top Up Cabang',
+                    'description': 'Top Up ke ${targetWallet.name}',
+                    'wallet_id': walletSumber,
+                    'related_branch_id': targetWallet.branchId,
+                    'date': FieldValue.serverTimestamp(),
+                    'user_id': _userRole == 'owner' ? 'owner' : _userBranchId,
+                    'deleted_at': null
+                  });
+
+                  // 2. Pemasukan Cabang
+                  final txCabangRef = FirebaseFirestore.instance.collection('transactions').doc();
+                  tx.set(txCabangRef, {
+                    'amount': amount,
+                    'type': 'income',
+                    'category': 'Top Up Masuk',
+                    'description': 'Terima dari Bendahara Pusat',
+                    'wallet_id': walletCabang,
+                    'related_branch_id': targetWallet.branchId,
+                    'date': FieldValue.serverTimestamp(),
+                    'user_id': _userRole == 'owner' ? 'owner' : _userBranchId,
+                    'deleted_at': null
+                  });
+
+                  // C. Update Saldo
+                  double saldoCabang = (cabangSnap.get('balance') ?? 0).toDouble();
+                  tx.update(sumberSnap.reference, {'balance': saldoSumber - amount});
+                  tx.update(cabangSnap.reference, {'balance': saldoCabang + amount});
                 });
+
                 if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Top Up Berhasil!"), backgroundColor: Colors.green));
               } catch (e) {
-                if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Gagal: $e"), backgroundColor: Colors.red));
+                if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Gagal: ${e.toString().replaceAll('Exception:', '')}"), backgroundColor: Colors.red));
               }
             },
             child: const Text("Kirim Dana"),
@@ -692,27 +891,33 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   String _formatRupiah(double amount) => NumberFormat.currency(locale: 'id_ID', symbol: 'Rp ', decimalDigits: 0).format(amount);
 
+  // --- REGENERATE SESUAI 5 WALLET SYSTEM ---
   void _regenerateWallets(BuildContext context) async {
-    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Sedang membuat ulang data dompet...")));
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Sedang membuat ulang sistem 5 dompet...")));
     final firestore = FirebaseFirestore.instance;
     final batch = firestore.batch();
 
-    batch.set(firestore.collection('wallets').doc('main_cash'), {'name': 'Kas Pusat', 'branch_id': 'pusat', 'balance': 0, 'is_main': true});
-    batch.set(firestore.collection('wallets').doc('petty_bst'), {'name': 'Kas Kecil Box', 'branch_id': 'bst_box', 'balance': 0, 'is_main': false});
-    batch.set(firestore.collection('wallets').doc('petty_alfa'), {'name': 'Kas Kecil Alfa', 'branch_id': 'm_alfa', 'balance': 0, 'is_main': false});
-    batch.set(firestore.collection('wallets').doc('petty_saufa'), {'name': 'Kas Kecil Saufa', 'branch_id': 'saufa', 'balance': 0, 'is_main': false});
+    // Level 1 & 2
+    batch.set(firestore.collection('wallets').doc('company_wallet'), {'name': 'Uang Perusahaan', 'branch_id': 'pusat', 'balance': 0, 'level': 1, 'is_main': true});
+    batch.set(firestore.collection('wallets').doc('treasurer_wallet'), {'name': 'Kas Bendahara Pusat', 'branch_id': 'pusat', 'balance': 0, 'level': 2, 'is_main': false});
+
+    // Level 3
+    batch.set(firestore.collection('wallets').doc('petty_box'), {'name': 'Kas Harian Box', 'branch_id': 'bst_box', 'balance': 0, 'level': 3, 'is_main': false});
+    batch.set(firestore.collection('wallets').doc('petty_alfa'), {'name': 'Kas Harian Alfa', 'branch_id': 'm_alfa', 'balance': 0, 'level': 3, 'is_main': false});
+    batch.set(firestore.collection('wallets').doc('petty_saufa'), {'name': 'Kas Harian Saufa', 'branch_id': 'saufa', 'balance': 0, 'level': 3, 'is_main': false});
 
     try {
       await batch.commit();
       if (mounted) {
         context.read<DashboardCubit>().startMonitoring();
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Berhasil! Data dompet telah pulih.")));
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Berhasil! Sistem dompet dipulihkan.")));
       }
     } catch (e) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Gagal: $e")));
     }
   }
 
+  // --- CREATE MISSING SESUAI ID BARU ---
   Future<void> _createMissingWallet(String branchId) async {
     ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Mengaktifkan dompet...")));
     String walletId = '';
@@ -720,13 +925,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
     if (branchId == 'm_alfa') {
       walletId = 'petty_alfa';
-      walletName = 'Kas Kecil Alfa';
+      walletName = 'Kas Harian Alfa';
     } else if (branchId == 'saufa') {
       walletId = 'petty_saufa';
-      walletName = 'Kas Kecil Saufa';
+      walletName = 'Kas Harian Saufa';
     } else if (branchId == 'bst_box') {
-      walletId = 'petty_bst';
-      walletName = 'Kas Kecil Box';
+      walletId = 'petty_box';
+      walletName = 'Kas Harian Box';
     } else {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Cabang tidak dikenali")));
       return;
@@ -737,6 +942,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         'name': walletName,
         'branch_id': branchId,
         'balance': 0,
+        'level': 3,
         'is_main': false,
       });
 

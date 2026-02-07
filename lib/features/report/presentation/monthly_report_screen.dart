@@ -4,6 +4,8 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:intl/intl.dart';
 import '../../../core/constants/app_colors.dart';
 import '../../../models/transaction_model.dart';
+// Pastikan nama file service PDF Anda sesuai.
+// Jika di report_screen.dart pakai PdfService, sesuaikan di sini.
 import '../services/pdf_report_service.dart';
 
 class MonthlyReportScreen extends StatefulWidget {
@@ -43,16 +45,18 @@ class _MonthlyReportScreenState extends State<MonthlyReportScreen> {
     if (user != null) {
       final doc = await FirebaseFirestore.instance.collection('users').doc(user.uid).get();
       if (doc.exists) {
-        setState(() {
-          _userRole = doc['role'] ?? 'admin_branch';
-          _userBranchId = doc['branch_id'] ?? 'bst_box';
+        if (mounted) {
+          setState(() {
+            _userRole = doc['role'] ?? 'admin_branch';
+            _userBranchId = doc['branch_id'] ?? 'bst_box';
 
-          // Jika Admin Cabang, kunci pilihan cabang ke miliknya sendiri
-          if (_userRole != 'owner') {
-            _selectedBranch = _userBranchId;
-          }
-          _isLoading = false;
-        });
+            // Jika Admin Cabang, kunci pilihan cabang ke miliknya sendiri
+            if (_userRole != 'owner') {
+              _selectedBranch = _userBranchId;
+            }
+            _isLoading = false;
+          });
+        }
       }
     }
   }
@@ -101,11 +105,25 @@ class _MonthlyReportScreenState extends State<MonthlyReportScreen> {
                 double totalExpense = 0;
                 Map<String, double> categoryExpense = {};
 
+                // List Transaksi Bersih (Tanpa Mutasi) untuk PDF
+                List<TransactionModel> cleanTransactions = [];
+
                 for (var doc in docs) {
                   final data = doc.data() as Map<String, dynamic>;
                   double amount = (data['amount'] ?? 0).toDouble();
                   String type = data['type'] ?? 'expense';
                   String cat = data['category'] ?? 'Lain-lain';
+
+                  // --- [PERBAIKAN LOGIKA] EXCLUDE TRANSFER ---
+                  // Abaikan transaksi yang sifatnya mutasi internal
+                  bool isTransfer = cat.toLowerCase().contains('top up') ||
+                      cat.toLowerCase().contains('mutasi') ||
+                      cat.toLowerCase().contains('internal');
+
+                  if (isTransfer) continue; // SKIP (Jangan dihitung)
+
+                  // Masukkan ke list bersih
+                  cleanTransactions.add(TransactionModel.fromMap(data, doc.id));
 
                   if (type == 'income') {
                     totalIncome += amount;
@@ -133,13 +151,7 @@ class _MonthlyReportScreenState extends State<MonthlyReportScreen> {
                     const Text("Pengeluaran per Kategori", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
                     const SizedBox(height: 12),
                     if (categoryExpense.isEmpty)
-                      const Padding(padding: EdgeInsets.all(20), child: Center(child: Text("- Tidak ada pengeluaran -", style: TextStyle(color: Colors.grey))))
-                    else
-                      ...categoryExpense.entries.map((e) => _buildCategoryItem(e.key, e.value, totalExpense)).toList(),
-
-                    const SizedBox(height: 24),
-                    if (categoryExpense.isEmpty)
-                      const Padding(padding: EdgeInsets.all(20), child: Center(child: Text("- Tidak ada pengeluaran -", style: TextStyle(color: Colors.grey))))
+                      const Padding(padding: EdgeInsets.all(20), child: Center(child: Text("- Tidak ada pengeluaran operasional -", style: TextStyle(color: Colors.grey))))
                     else
                       ...categoryExpense.entries.map((e) => _buildCategoryItem(e.key, e.value, totalExpense)).toList(),
 
@@ -156,18 +168,13 @@ class _MonthlyReportScreenState extends State<MonthlyReportScreen> {
                           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                         ),
                         icon: const Icon(Icons.print),
-                        label: const Text("CETAK LAPORAN PDF (Full Report)"),
+                        label: const Text("CETAK LAPORAN PDF (Real Report)"),
                         onPressed: () async {
-                          // Konversi QuerySnapshot ke List<TransactionModel>
-                          List<TransactionModel> allData = docs.map((d) {
-                            return TransactionModel.fromMap(d.data() as Map<String, dynamic>, d.id);
-                          }).toList();
-
-                          // Panggil Service PDF
+                          // Panggil Service PDF dengan Data Bersih
                           await PdfReportService().generateAndPrintPdf(
                             startDate: start,
                             endDate: end,
-                            transactions: allData,
+                            transactions: cleanTransactions, // Pakai list yg sudah difilter
                             totalIncome: totalIncome,
                             totalExpense: totalExpense,
                             netProfit: netProfit,
@@ -175,8 +182,9 @@ class _MonthlyReportScreenState extends State<MonthlyReportScreen> {
                         },
                       ),
                     ),
+                    const SizedBox(height: 10),
+                    const Center(child: Text("* Transaksi Top Up/Mutasi tidak dihitung dalam laporan ini.", style: TextStyle(fontSize: 10, color: Colors.grey))),
                     const SizedBox(height: 40),
-                    // Bisa ditambahkan tombol Export PDF nanti
                   ],
                 );
               },
@@ -291,7 +299,8 @@ class _MonthlyReportScreenState extends State<MonthlyReportScreen> {
   }
 
   Widget _buildCategoryItem(String category, double amount, double totalExpense) {
-    double percentage = (amount / totalExpense);
+    // Hindari pembagian dengan nol
+    double percentage = totalExpense == 0 ? 0 : (amount / totalExpense);
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
       padding: const EdgeInsets.all(12),

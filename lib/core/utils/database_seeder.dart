@@ -10,19 +10,15 @@ class DatabaseSeeder {
   // --- 1. FITUR RESET DATA (BERSIH-BERSIH) ---
   Future<void> clearAllData() async {
     try {
+      print("⏳ Sedang menghapus data lama...");
       await _deleteCollection('transactions');
       await _deleteCollection('debts');
       await _deleteCollection('requests');
       await _deleteCollection('notifications');
       await _deleteCollection('employees');
 
-      // RESET Semua Saldo Dompet ke 0
-      final wallets = await _db.collection('wallets').get();
-      WriteBatch batch = _db.batch();
-      for (var doc in wallets.docs) {
-        batch.update(doc.reference, {'balance': 0});
-      }
-      await batch.commit();
+      // KITA HAPUS WALLETS JUGA AGAR DIBUAT ULANG DENGAN STRUKTUR BARU
+      await _deleteCollection('wallets');
 
       print("✅ DATABASE BERHASIL DI-RESET BERSIH!");
     } catch (e) {
@@ -30,7 +26,7 @@ class DatabaseSeeder {
     }
   }
 
-  // --- 2. GENERATE DUMMY DATA (VERSI TERBARU) ---
+  // --- 2. GENERATE DUMMY DATA (STRUKTUR 5 WALLET) ---
   Future<void> seedDummyData() async {
     try {
       final user = _auth.currentUser;
@@ -38,6 +34,7 @@ class DatabaseSeeder {
       WriteBatch batch = _db.batch();
       int batchCount = 0;
 
+      // Helper untuk commit batch jika sudah penuh (limit 500)
       Future<void> checkBatch() async {
         batchCount++;
         if (batchCount >= 450) {
@@ -47,175 +44,168 @@ class DatabaseSeeder {
         }
       }
 
-      // --- A. DATA CABANG & DOMPET (PASTIKAN ID SESUAI) ---
-      // Mapping ID Cabang -> ID Dompet (PENTING AGAR TOMBOL TOPUP MUNCUL)
-      List<Map<String, String>> branches = [
-        {'id': 'pusat', 'name': 'Kantor Pusat', 'wallet': 'main_cash'},
-        {'id': 'bst_box', 'name': 'Box Factory', 'wallet': 'petty_bst'}, // ID wallet diperbaiki
-        {'id': 'm_alfa', 'name': 'Maint. Alfa', 'wallet': 'petty_alfa'},
-        {'id': 'saufa', 'name': 'Saufa Olshop', 'wallet': 'petty_saufa'},
-      ];
+      print("🌱 Memulai Seeding Data Baru...");
 
-      // Set Saldo Awal
-      for (var b in branches) {
-        double modal = b['id'] == 'pusat' ? 500000000 : 10000000; // Pusat 500jt, Cabang 10jt
-        batch.set(_db.collection('wallets').doc(b['wallet']), {
-          'balance': modal,
-          'name': b['id'] == 'pusat' ? 'Kas Pusat' : 'Kas Kecil ${b['name']}',
-          'branch_id': b['id'],
-          'is_main': b['id'] == 'pusat',
-          'updated_at': FieldValue.serverTimestamp(),
+      // ==========================================
+      // A. BUAT 5 WALLET BAKU (HIERARKI KEUANGAN)
+      // ==========================================
+
+      // LEVEL 1: Uang Perusahaan (Penampung Pemasukan)
+      // Kita kasih saldo awal besar biar enak dilihat
+      batch.set(_db.collection('wallets').doc('company_wallet'), {
+        'name': 'Uang Perusahaan (Main)',
+        'branch_id': 'pusat',
+        'balance': 500000000, // 500 Juta
+        'level': 1,
+        'is_active': true,
+        'description': 'Semua pemasukan masuk ke sini'
+      });
+
+      // LEVEL 2: Kas Bendahara Pusat (Eksekutor Utama)
+      batch.set(_db.collection('wallets').doc('treasurer_wallet'), {
+        'name': 'Kas Bendahara Pusat',
+        'branch_id': 'pusat',
+        'balance': 150000000, // 150 Juta (Modal Awal)
+        'level': 2,
+        'is_active': true,
+        'description': 'Untuk belanja perusahaan & topup cabang'
+      });
+
+      // LEVEL 3: Kas Harian Cabang (Operasional Receh)
+      List<String> branchIds = ['bst_box', 'm_alfa', 'saufa'];
+      Map<String, String> walletMap = {
+        'bst_box': 'petty_box',
+        'm_alfa': 'petty_alfa',
+        'saufa': 'petty_saufa'
+      };
+
+      for (var branch in branchIds) {
+        batch.set(_db.collection('wallets').doc(walletMap[branch]), {
+          'name': 'Kas Harian ${branch.replaceAll('_', ' ').toUpperCase()}',
+          'branch_id': branch,
+          'balance': 5000000, // 5 Juta (Modal Harian)
+          'level': 3,
+          'is_active': true,
+          'description': 'Khusus pengeluaran kategori Harian'
         });
-        await checkBatch();
       }
+      await checkBatch();
 
-      // --- B. PEGAWAI (EMPLOYEES) ---
-      List<String> names = ['Budi Santoso', 'Siti Aminah', 'Rudi Hartono', 'Dewi Persik', 'Joko Anwar', 'Andi Saputra', 'Rina Wati', 'Eko Prasetyo', 'Sari Indah', 'Dedi Kurniawan'];
-      List<String> positions = ['Staff', 'Kasir', 'Teknisi', 'Sales', 'Admin'];
 
-      for (int i = 0; i < names.length; i++) {
-        var branch = branches[_rnd.nextInt(branches.length)];
+      // ==========================================
+      // B. DATA PEGAWAI (EMPLOYEES)
+      // ==========================================
+      List<String> positions = ['Staff', 'Operator', 'Sales', 'Admin'];
+      for (int i = 0; i < 15; i++) {
         String empId = _db.collection('employees').doc().id;
+        String branch = branchIds[_rnd.nextInt(branchIds.length)];
 
         batch.set(_db.collection('employees').doc(empId), {
-          'name': names[i],
+          'name': 'Pegawai Dummy ${i + 1}',
           'position': positions[_rnd.nextInt(positions.length)],
-          'branch_id': branch['id'],
-          'branch_name': branch['name'],
-          'base_salary': 3000000 + (_rnd.nextInt(10) * 500000),
-          'phone_number': '0812${_rnd.nextInt(99999999)}',
-          'joined_date': DateTime.now().subtract(Duration(days: _rnd.nextInt(1000))),
+          'branch_id': branch,
+          'branch_name': branch == 'bst_box' ? 'Box Factory' : (branch == 'm_alfa' ? 'Maint. Alfa' : 'Saufa Olshop'),
+          'base_salary': (30 + _rnd.nextInt(20)) * 100000, // 3jt - 5jt
+          'phone_number': '0812345678$i',
+          'payday_date': 25,
+          'joined_date': DateTime.now().subtract(Duration(days: _rnd.nextInt(365))),
+          'last_paid_at': null,
         });
         await checkBatch();
       }
 
-      // --- C. TRANSAKSI (30 HARI TERAKHIR) ---
-      DateTime now = DateTime.now();
-      for (int i = 30; i >= 0; i--) {
-        DateTime txDate = now.subtract(Duration(days: i));
 
-        for (var b in branches) {
-          if (b['id'] == 'pusat') continue;
+      // ==========================================
+      // C. DATA TRANSAKSI (TAAT ATURAN DOMPET)
+      // ==========================================
 
-          // 1. Pemasukan (Sales)
-          if (_rnd.nextInt(10) > 1) {
-            double income = (5 + _rnd.nextInt(45)) * 100000;
-            String txId = _db.collection('transactions').doc().id;
-            batch.set(_db.collection('transactions').doc(txId), {
-              'amount': income,
-              'type': 'income',
-              'category': 'Penjualan',
-              'description': 'Omzet Harian ${b['name']}',
-              'wallet_id': b['wallet'],
-              'related_branch_id': b['id'],
-              'date': txDate.add(Duration(hours: 10 + _rnd.nextInt(8))),
-              'user_id': uid,
-              'deleted_at': null,
-            });
-            await checkBatch();
-          }
+      // Kategori Pengeluaran Pusat (Pakai Kas Bendahara)
+      List<String> centerExpenses = ['Suntikan Modal', 'Belanja Perusahaan', 'Beban Perusahaan', 'Maintenance'];
 
-          // 2. Pengeluaran Kecil
+      // Kategori Pengeluaran Cabang (Pakai Kas Harian)
+      List<String> dailyExpenses = ['Harian'];
+
+      for (int i = 0; i < 40; i++) {
+        String txId = _db.collection('transactions').doc().id;
+        bool isIncome = _rnd.nextBool(); // 50% Masuk, 50% Keluar
+
+        String branch = branchIds[_rnd.nextInt(branchIds.length)];
+        String walletId;
+        String category;
+        String description;
+        double amount;
+        String type;
+
+        if (isIncome) {
+          // --- PEMASUKAN ---
+          // Rule: Selalu Masuk Uang Perusahaan
+          type = 'income';
+          walletId = 'company_wallet';
+          category = ['Penjualan', 'Jasa', 'Suntikan Modal'][_rnd.nextInt(3)];
+          amount = (5 + _rnd.nextInt(50)) * 100000; // 500rb - 5jt
+          description = "Omzet dari $branch";
+        } else {
+          // --- PENGELUARAN ---
+          type = 'expense';
+
+          // Tentukan apakah ini Pengeluaran Pusat atau Harian Cabang
           if (_rnd.nextBool()) {
-            double expense = (2 + _rnd.nextInt(15)) * 10000;
-            String txId = _db.collection('transactions').doc().id;
-            batch.set(_db.collection('transactions').doc(txId), {
-              'amount': expense,
-              'type': 'expense',
-              'category': _rnd.nextBool() ? 'Konsumsi' : 'Transportasi',
-              'description': 'Biaya Ops Harian',
-              'wallet_id': b['wallet'],
-              'related_branch_id': b['id'],
-              'date': txDate.add(Duration(hours: 12 + _rnd.nextInt(5))),
-              'user_id': uid,
-              'deleted_at': null,
-            });
-            await checkBatch();
+            // CASE 1: Pengeluaran Pusat (Belanja Besar)
+            walletId = 'treasurer_wallet';
+            category = centerExpenses[_rnd.nextInt(centerExpenses.length)];
+            amount = (10 + _rnd.nextInt(100)) * 100000; // 1jt - 10jt
+            description = "Biaya $category untuk $branch";
+          } else {
+            // CASE 2: Pengeluaran Harian Cabang
+            walletId = walletMap[branch]!; // petty_box, dll
+            category = 'Harian';
+            amount = (1 + _rnd.nextInt(5)) * 50000; // 50rb - 250rb
+            description = "Beli bensin/token/makan";
           }
         }
-      }
 
-      // --- D. UTANG (DEBTS) - UPDATE BESAR ---
-      // Tipe 1: Utang Vendor (Manual) -> Masuk Tab 1
-      List<String> vendors = ['Supplier Kertas', 'Toko Bangunan Jaya', 'Vendor IT', 'Catering Bu Ani'];
-      List<String> banks = ['BCA', 'BRI', 'Mandiri', 'BNI'];
-
-      for (int i = 0; i < 5; i++) {
-        var b = branches[1 + _rnd.nextInt(3)]; // Cabang acak
-        String debtId = _db.collection('debts').doc().id;
-        bool isPaid = _rnd.nextBool();
-
-        batch.set(_db.collection('debts').doc(debtId), {
-          'name': vendors[_rnd.nextInt(vendors.length)],
-          'amount': (10 + _rnd.nextInt(90)) * 50000,
-          'branch_id': b['id'],
-          'note': 'Jatuh tempo minggu depan',
-          'status': isPaid ? 'paid' : 'unpaid',
-          'created_at': DateTime.now().subtract(Duration(days: _rnd.nextInt(10))),
-          'type': 'payable',
-
-          // FIELD BARU UTANG MANUAL
-          'source': 'manual',
-          'bank_name': banks[_rnd.nextInt(banks.length)],
-          'account_number': '${_rnd.nextInt(999999999)}',
-        });
-        await checkBatch();
-      }
-
-      // Tipe 2: Sisa Approval (Otomatis) -> Masuk Tab 2
-      for (int i = 0; i < 3; i++) {
-        var b = branches[1 + _rnd.nextInt(3)];
-        String debtId = _db.collection('debts').doc().id;
-        double sisa = (5 + _rnd.nextInt(20)) * 10000;
-
-        batch.set(_db.collection('debts').doc(debtId), {
-          'name': "Sisa Approval: Belanja Alat",
-          'amount': sisa,
-          'branch_id': b['id'],
-          'note': 'Total minta 1jt, cair 500rb',
-          'status': 'unpaid',
-          'created_at': DateTime.now().subtract(Duration(days: _rnd.nextInt(5))),
-          'type': 'payable',
-
-          // FIELD BARU UTANG APPROVAL
-          'source': 'approval',
-          'bank_name': null, // Approval biasanya tidak ada bank di sini
-          'account_number': null,
-        });
-        await checkBatch();
-      }
-
-      // --- E. APPROVAL REQUESTS ---
-      List<String> items = ['Servis AC', 'Beli Kertas', 'Ganti Oli Mobil', 'Pulsa Modem'];
-      for (int i = 0; i < 8; i++) {
-        var b = branches[1 + _rnd.nextInt(3)];
-        String status = ['pending', 'approved', 'rejected'][_rnd.nextInt(3)];
-        double amount = (2 + _rnd.nextInt(10)) * 100000;
-
-        String reqId = _db.collection('requests').doc().id;
-        batch.set(_db.collection('requests').doc(reqId), {
-          'branch_id': b['id'],
-          'branch_name': b['name'],
-          'requester_id': uid,
-          'item_name': items[_rnd.nextInt(items.length)],
+        batch.set(_db.collection('transactions').doc(txId), {
           'amount': amount,
-          'category': 'Operasional',
-          'note': 'Segera butuh',
-          'status': status,
-          'created_at': DateTime.now().subtract(Duration(days: _rnd.nextInt(7))),
-          'approved_amount': status == 'approved' ? amount : 0,
+          'type': type,
+          'category': category,
+          'description': description,
+          'wallet_id': walletId, // <--- Sudah sesuai logic baru
+          'date': DateTime.now().subtract(Duration(days: _rnd.nextInt(30))), // Data 30 hari terakhir
+          'user_id': uid,
+          'related_branch_id': branch,
+          'deleted_at': null,
         });
         await checkBatch();
       }
 
+      // ==========================================
+      // D. DATA UTANG (LIABILITY)
+      // ==========================================
+      List<String> debtsName = ['Vendor Kertas', 'Toko Sparepart', 'Supplier Besi'];
+      for (int i = 0; i < 5; i++) {
+        String debtId = _db.collection('debts').doc().id;
+        batch.set(_db.collection('debts').doc(debtId), {
+          'name': debtsName[_rnd.nextInt(debtsName.length)],
+          'amount': (10 + _rnd.nextInt(50)) * 100000,
+          'branch_id': branchIds[_rnd.nextInt(branchIds.length)],
+          'note': 'Jatuh tempo bulan depan',
+          'status': 'unpaid',
+          'created_at': DateTime.now().subtract(Duration(days: 5)),
+          'type': 'payable'
+        });
+        await checkBatch();
+      }
+
+      // Commit Akhir
       await batch.commit();
-      print("✅ MEGA SEEDER V3 SELESAI!");
+      print("✅ SEEDER BARU SELESAI! (5 WALLET SYSTEM READY)");
 
     } catch (e) {
       throw Exception("Gagal Seed Dummy: $e");
     }
   }
 
+  // Helper Hapus Collection
   Future<void> _deleteCollection(String colName) async {
     final snapshot = await _db.collection(colName).get();
     if (snapshot.docs.isEmpty) return;
@@ -224,7 +214,7 @@ class DatabaseSeeder {
     for (var doc in snapshot.docs) {
       batch.delete(doc.reference);
       count++;
-      if (count >= 400) {
+      if (count >= 450) {
         await batch.commit();
         batch = _db.batch();
         count = 0;
